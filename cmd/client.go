@@ -12,7 +12,6 @@ import (
 	rpchttp "github.com/tendermint/tendermint/rpc/client/http"
 	libclient "github.com/tendermint/tendermint/rpc/jsonrpc/client"
 	"google.golang.org/grpc"
-	"google.golang.org/grpc/encoding/gzip"
 )
 
 const (
@@ -67,7 +66,6 @@ func getSentryInfo(grpcAddr string) (*tmservice.GetNodeInfoResponse, *tmservice.
 	conn, err := grpc.Dial(grpcAddr,
 		grpc.WithInsecure(),
 		grpc.WithDefaultCallOptions(grpc.MaxCallRecvMsgSize(10*1024*1024)), // 10MB
-		grpc.WithDefaultCallOptions(grpc.UseCompressor(gzip.Name)),         // Compression optionnelle
 	)
 	if err != nil {
 		return nil, nil, err
