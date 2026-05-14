@@ -39,7 +39,11 @@ var monitorCmd = &cobra.Command{
 			if config.Notifications.Discord == nil {
 				panic("Discord configuration not present in config.yaml")
 			}
-			notificationService = NewDiscordNotificationService(config.Notifications.Discord.Webhook.ID, config.Notifications.Discord.Webhook.Token)
+			var err error
+			notificationService, err = NewDiscordNotificationService(&config.Notifications.Discord.Webhook)
+			if err != nil {
+				panic(fmt.Sprintf("Invalid Discord webhook configuration: %v", err))
+			}
 		default:
 			if config.Notifications.Service == "" {
 				panic("Notification service not configured in config.yaml")

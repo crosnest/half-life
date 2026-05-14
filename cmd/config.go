@@ -172,8 +172,24 @@ func (c *HalfLifeConfig) getUnsetDefaults() {
 }
 
 type DiscordWebhookConfig struct {
-	ID    string `yaml:"id"`
-	Token string `yaml:"token"`
+	URL   string `yaml:"url"`    // Full webhook URL: https://discord.com/api/webhooks/{id}/{token}
+	ID    string `yaml:"id"`     // Webhook ID (alternative to URL)
+	Token string `yaml:"token"`  // Webhook Token (alternative to URL)
+}
+
+func (c *DiscordWebhookConfig) Validate() error {
+	hasURL := c.URL != ""
+	hasIDToken := c.ID != "" && c.Token != ""
+
+	if !hasURL && !hasIDToken {
+		return errors.New("Discord webhook config must have either 'url' or both 'id' and 'token'")
+	}
+
+	if hasURL && hasIDToken {
+		return errors.New("Discord webhook config should use either 'url' or 'id'+'token', not both")
+	}
+
+	return nil
 }
 
 type DiscordChannelConfig struct {

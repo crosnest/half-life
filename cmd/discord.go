@@ -7,10 +7,10 @@ import (
 	"sync"
 	"time"
 
-	"github.com/DisgoOrg/disgo/discord"
-	"github.com/DisgoOrg/disgo/rest"
-	"github.com/DisgoOrg/disgo/webhook"
-	"github.com/DisgoOrg/snowflake"
+	"github.com/disgoorg/disgo/discord"
+	"github.com/disgoorg/disgo/rest"
+	"github.com/disgoorg/disgo/webhook"
+	"github.com/disgoorg/snowflake/v2"
 )
 
 const (
@@ -25,8 +25,9 @@ const (
 )
 
 type DiscordNotificationService struct {
-	webhookID    string
-	webhookToken string
+	webhookURL   string // Full webhook URL
+	webhookID    string // Webhook ID (if using ID+Token form)
+	webhookToken string // Webhook Token (if using ID+Token form)
 	postMutex    *sync.Mutex
 }
 
@@ -34,12 +35,23 @@ func formattedTime(t time.Time) string {
 	return fmt.Sprintf("<t:%d:R>", t.Unix())
 }
 
-func NewDiscordNotificationService(webhookID, webhookToken string) *DiscordNotificationService {
-	return &DiscordNotificationService{
-		webhookID:    webhookID,
-		webhookToken: webhookToken,
-		postMutex:    &sync.Mutex{},
+func NewDiscordNotificationService(config *DiscordWebhookConfig) (*DiscordNotificationService, error) {
+	if err := config.Validate(); err != nil {
+		return nil, err
 	}
+
+	service := &DiscordNotificationService{
+		postMutex: &sync.Mutex{},
+	}
+
+	if config.URL != "" {
+		service.webhookURL = config.URL
+	} else {
+		service.webhookID = config.ID
+		service.webhookToken = config.Token
+	}
+
+	return service, nil
 }
 
 func getColorForAlertLevel(alertLevel AlertLevel) int {
@@ -163,8 +175,12 @@ func getCurrentStatsEmbed(stats ValidatorStats, vm *ValidatorMonitor) discord.Em
 	}
 }
 
-func (service *DiscordNotificationService) client() *webhook.Client {
-	return webhook.NewClient(snowflake.Snowflake(service.webhookID), service.webhookToken)
+func (service *DiscordNotificationService) client() (*webhook.Client, error) {
+	if service.webhookURL != "" {
+		return webhook.NewWithURL(service.webhookURL)
+	}
+	id := snowflake.MustParse(service.webhookID)
+	return webhook.New(id, service.webhookToken), nil
 }
 
 // implements NotificationService interface
@@ -177,15 +193,20 @@ func (service *DiscordNotificationService) UpdateValidatorRealtimeStatus(
 ) {
 	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(time.Second*4))
 	defer cancel()
-	client := service.client()
+	client, err := service.client()
+	if err != nil {
+		fmt.Printf("Error creating discord webhook client: %v\n", err)
+		return
+	}
 	defer client.Close(ctx)
 	if vm.DiscordStatusMessageID != nil {
 		service.postMutex.Lock()
-		_, err := client.UpdateMessage(snowflake.Snowflake(*vm.DiscordStatusMessageID), discord.WebhookMessageUpdate{
+		messageID := snowflake.MustParse(*vm.DiscordStatusMessageID)
+		_, err := client.UpdateMessage(messageID, discord.WebhookMessageUpdate{
 			Embeds: &[]discord.Embed{
 				getCurrentStatsEmbed(stats, vm),
 			},
-		}, rest.WithCtx(ctx))
+		}, rest.UpdateWebhookMessageParams{})
 		service.postMutex.Unlock()
 		if err != nil {
 			fmt.Printf("Error updating discord message: %v\n", err)
@@ -198,7 +219,7 @@ func (service *DiscordNotificationService) UpdateValidatorRealtimeStatus(
 			Embeds: []discord.Embed{
 				getCurrentStatsEmbed(stats, vm),
 			},
-		}, rest.WithCtx(ctx))
+		}, rest.CreateWebhookMessageParams{Wait: true})
 		service.postMutex.Unlock()
 		if err != nil {
 			fmt.Printf("Error sending discord message: %v\n", err)
@@ -246,10 +267,15 @@ func (service *DiscordNotificationService) SendValidatorAlertNotification(
 		}
 		ctx, cancel := context.WithTimeout(context.Background(), time.Duration(time.Second*4))
 		defer cancel()
-		client := service.client()
+		client, err := service.client()
+		if err != nil {
+			fmt.Printf("Error creating discord webhook client: %v\n", err)
+			ctx.Done()
+			return
+		}
 		defer client.Close(ctx)
 		service.postMutex.Lock()
-		_, err := client.CreateMessage(discord.WebhookMessageCreate{
+		_, err = client.CreateMessage(discord.WebhookMessageCreate{
 			Username: config.Notifications.Discord.Username,
 			Content:  toNotify,
 			Embeds: []discord.Embed{
@@ -259,7 +285,7 @@ func (service *DiscordNotificationService) SendValidatorAlertNotification(
 					Color:       alertColor,
 				},
 			},
-		}, rest.WithCtx(ctx))
+		}, rest.CreateWebhookMessageParams{Wait: true})
 		service.postMutex.Unlock()
 		if err != nil {
 			fmt.Printf("Error sending discord message: %v\n", err)
@@ -277,10 +303,15 @@ func (service *DiscordNotificationService) SendValidatorAlertNotification(
 		}
 		ctx, cancel := context.WithTimeout(context.Background(), time.Duration(time.Second*4))
 		defer cancel()
-		client := service.client()
+		client, err := service.client()
+		if err != nil {
+			fmt.Printf("Error creating discord webhook client: %v\n", err)
+			ctx.Done()
+			return
+		}
 		defer client.Close(ctx)
 		service.postMutex.Lock()
-		_, err := client.CreateMessage(discord.WebhookMessageCreate{
+		_, err = client.CreateMessage(discord.WebhookMessageCreate{
 			Username: config.Notifications.Discord.Username,
 			Content:  toNotify,
 			Embeds: []discord.Embed{
@@ -290,7 +321,7 @@ func (service *DiscordNotificationService) SendValidatorAlertNotification(
 					Color:       colorGood,
 				},
 			},
-		}, rest.WithCtx(ctx))
+		}, rest.CreateWebhookMessageParams{Wait: true})
 		service.postMutex.Unlock()
 		if err != nil {
 			fmt.Printf("Error sending discord message: %v\n", err)
