@@ -3,6 +3,7 @@ package cmd
 import (
 	"context"
 	"fmt"
+	"net/url"
 	"strings"
 	"sync"
 	"time"
@@ -46,9 +47,11 @@ func NewDiscordNotificationService(config *DiscordWebhookConfig) (*DiscordNotifi
 
 	if config.URL != "" {
 		service.webhookURL = config.URL
+		fmt.Printf("[Discord] Initialized notification service with webhook URL %s\n", config.URL)
 	} else {
 		service.webhookID = config.ID
 		service.webhookToken = config.Token
+		fmt.Printf("[Discord] Initialized notification service with webhook ID+Token (ID: %s, Token: %s)\n", config.ID, config.Token)
 	}
 
 	return service, nil
@@ -177,10 +180,46 @@ func getCurrentStatsEmbed(stats ValidatorStats, vm *ValidatorMonitor) discord.Em
 
 func (service *DiscordNotificationService) client() (*webhook.Client, error) {
 	if service.webhookURL != "" {
-		return webhook.NewWithURL(service.webhookURL)
+		fmt.Printf("[Discord] Creating webhook client using full URL\n")
+		
+		// Extract base URL and webhook credentials from the full webhook URL
+		u, err := url.Parse(service.webhookURL)
+		if err != nil {
+			fmt.Printf("[Discord] Error: Failed to parse webhook URL: %v\n", err)
+			return nil, err
+		}
+		
+		// Extract ID and Token from path
+		parts := strings.FieldsFunc(u.Path, func(r rune) bool { return r == '/' })
+		if len(parts) < 4 {
+			fmt.Printf("[Discord] Error: Invalid webhook URL format\n")
+			return nil, fmt.Errorf("invalid webhook URL format")
+		}
+		
+		token := parts[3]
+		id, err := snowflake.Parse(parts[2])
+		if err != nil {
+			fmt.Printf("[Discord] Error: Failed to parse webhook ID: %v\n", err)
+			return nil, err
+		}
+		
+		// Construct base URL (e.g., https://discord.com/api/webhooks)
+		baseURL := fmt.Sprintf("%s://%s/%s", u.Scheme, u.Host, strings.Join(parts[:len(parts)-2], "/"))
+		fmt.Printf("[Discord] Detected base URL: %s\n", baseURL)
+		
+		// Create REST client configured for this instance
+		restClient := rest.NewClient(rest.NewDefaultHTTPClient(), baseURL)
+		
+		// Create webhook client with configured REST client
+		client := webhook.New(id, token, webhook.WithRestClient(restClient))
+		fmt.Printf("[Discord] Successfully created webhook client from URL\n")
+		return client, nil
 	}
+	fmt.Printf("[Discord] Creating webhook client using ID+Token (ID: %s)\n", service.webhookID)
 	id := snowflake.MustParse(service.webhookID)
-	return webhook.New(id, service.webhookToken), nil
+	client := webhook.New(id, service.webhookToken)
+	fmt.Printf("[Discord] Successfully created webhook client from ID+Token\n")
+	return client, nil
 }
 
 // implements NotificationService interface
@@ -195,13 +234,14 @@ func (service *DiscordNotificationService) UpdateValidatorRealtimeStatus(
 	defer cancel()
 	client, err := service.client()
 	if err != nil {
-		fmt.Printf("Error creating discord webhook client: %v\n", err)
+		fmt.Printf("[Discord] Error creating discord webhook client: %v\n", err)
 		return
 	}
 	defer client.Close(ctx)
 	if vm.DiscordStatusMessageID != nil {
 		service.postMutex.Lock()
 		messageID := snowflake.MustParse(*vm.DiscordStatusMessageID)
+		fmt.Printf("[Discord] Updating existing status message (ID: %s) for validator: %s\n", *vm.DiscordStatusMessageID, vm.Name)
 		_, err := client.UpdateMessage(messageID, discord.WebhookMessageUpdate{
 			Embeds: &[]discord.Embed{
 				getCurrentStatsEmbed(stats, vm),
@@ -209,11 +249,13 @@ func (service *DiscordNotificationService) UpdateValidatorRealtimeStatus(
 		}, rest.UpdateWebhookMessageParams{})
 		service.postMutex.Unlock()
 		if err != nil {
-			fmt.Printf("Error updating discord message: %v\n", err)
+			fmt.Printf("[Discord] Error updating discord message: %v\n", err)
 			return
 		}
+		fmt.Printf("[Discord] Successfully updated status message for validator: %s\n", vm.Name)
 	} else {
 		service.postMutex.Lock()
+		fmt.Printf("[Discord] Creating new status message for validator: %s\n", vm.Name)
 		message, err := client.CreateMessage(discord.WebhookMessageCreate{
 			Username: config.Notifications.Discord.Username,
 			Embeds: []discord.Embed{
@@ -222,12 +264,12 @@ func (service *DiscordNotificationService) UpdateValidatorRealtimeStatus(
 		}, rest.CreateWebhookMessageParams{Wait: true})
 		service.postMutex.Unlock()
 		if err != nil {
-			fmt.Printf("Error sending discord message: %v\n", err)
+			fmt.Printf("[Discord] Error sending discord message: %v\n", err)
 			return
 		}
 		messageID := string(message.ID)
 		vm.DiscordStatusMessageID = &messageID
-		fmt.Printf("Saved message ID: %s\n", messageID)
+		fmt.Printf("[Discord] Created new status message (ID: %s) for validator: %s\n", messageID, vm.Name)
 		saveConfig(configFile, config, writeConfigMutex)
 	}
 }
@@ -267,9 +309,10 @@ func (service *DiscordNotificationService) SendValidatorAlertNotification(
 		}
 		ctx, cancel := context.WithTimeout(context.Background(), time.Duration(time.Second*4))
 		defer cancel()
+		fmt.Printf("[Discord] Sending alert notification for validator: %s (AlertLevel: %d)\n", vm.Name, alertNotification.AlertLevel)
 		client, err := service.client()
 		if err != nil {
-			fmt.Printf("Error creating discord webhook client: %v\n", err)
+			fmt.Printf("[Discord] Error creating discord webhook client: %v\n", err)
 			ctx.Done()
 			return
 		}
@@ -288,7 +331,9 @@ func (service *DiscordNotificationService) SendValidatorAlertNotification(
 		}, rest.CreateWebhookMessageParams{Wait: true})
 		service.postMutex.Unlock()
 		if err != nil {
-			fmt.Printf("Error sending discord message: %v\n", err)
+			fmt.Printf("[Discord] Error sending alert notification: %v\n", err)
+		} else {
+			fmt.Printf("[Discord] Successfully sent alert notification for validator: %s\n", vm.Name)
 		}
 	}
 
@@ -303,9 +348,10 @@ func (service *DiscordNotificationService) SendValidatorAlertNotification(
 		}
 		ctx, cancel := context.WithTimeout(context.Background(), time.Duration(time.Second*4))
 		defer cancel()
+		fmt.Printf("[Discord] Sending cleared alerts notification for validator: %s\n", vm.Name)
 		client, err := service.client()
 		if err != nil {
-			fmt.Printf("Error creating discord webhook client: %v\n", err)
+			fmt.Printf("[Discord] Error creating discord webhook client: %v\n", err)
 			ctx.Done()
 			return
 		}
@@ -324,7 +370,9 @@ func (service *DiscordNotificationService) SendValidatorAlertNotification(
 		}, rest.CreateWebhookMessageParams{Wait: true})
 		service.postMutex.Unlock()
 		if err != nil {
-			fmt.Printf("Error sending discord message: %v\n", err)
+			fmt.Printf("[Discord] Error sending cleared alerts notification: %v\n", err)
+		} else {
+			fmt.Printf("[Discord] Successfully sent cleared alerts notification for validator: %s\n", vm.Name)
 		}
 	}
 }
