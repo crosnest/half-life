@@ -203,15 +203,16 @@ func (service *DiscordNotificationService) client() (*webhook.Client, error) {
 			return nil, err
 		}
 		
-		// Construct base URL (e.g., https://discord.com/api/webhooks)
+		// Construct base URL (e.g., https://discord.com/api/v10)
 		baseURL := fmt.Sprintf("%s://%s/%s", u.Scheme, u.Host, strings.Join(parts[:len(parts)-2], "/"))
 		fmt.Printf("[Discord] Detected base URL: %s\n", baseURL)
 		
-		// Create REST client configured for this instance
-		restClient := rest.NewClient(rest.NewDefaultHTTPClient(), baseURL)
-		
-		// Create webhook client with configured REST client
-		client := webhook.New(id, token, webhook.WithRestClient(restClient))
+		// Create webhook client with configured base URL
+		client := webhook.New(id, token,
+			webhook.WithRestClientConfigOpts(
+				rest.WithURL(baseURL),
+			),
+		)
 		fmt.Printf("[Discord] Successfully created webhook client from URL\n")
 		return client, nil
 	}
